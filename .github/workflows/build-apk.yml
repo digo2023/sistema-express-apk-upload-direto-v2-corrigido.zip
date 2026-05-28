@@ -1,0 +1,135 @@
+name: Gerar APK Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  construir:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências do sistema
+        run: |
+          sudo apt update
+          sudo apt install -y python3 python3-pip python3-setuptools python3-wheel git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo6 cmake libffi-dev libssl-dev
+
+      - name: Descompactar ZIP do sistema
+        run: |
+          mkdir -p projeto_apk
+          mkdir -p artefatos
+
+          ZIP_ARQUIVO=$(ls sistema-express-apk-upload-direto-v2-corrigido.zip 2>/dev/null | head -n 1)
+
+          if [ -z "$ZIP_ARQUIVO" ]; then
+            ZIP_ARQUIVO=$(ls *.zip 2>/dev/null | head -n 1)
+          fi
+
+          if [ -z "$ZIP_ARQUIVO" ]; then
+            echo "ERRO: nenhum arquivo ZIP encontrado na raiz do repositório." | tee artefatos/erro.txt
+            exit 1
+          fi
+
+          echo "ZIP encontrado: $ZIP_ARQUIVO" | tee artefatos/zip_encontrado.txt
+          unzip -o "$ZIP_ARQUIVO" -d projeto_apk
+
+          echo "Arquivos extraídos:" | tee artefatos/arquivos_extraidos.txt
+          find projeto_apk -maxdepth 8 -type f | tee -a artefatos/arquivos_extraidos.txt
+
+      - name: Localizar buildozer.spec
+        run: |
+          mkdir -p artefatos
+
+          BUILD_DIR=$(find projeto_apk -name buildozer.spec -exec dirname {} \; | head -n 1)
+
+          if [ -z "$BUILD_DIR" ]; then
+            echo "ERRO: buildozer.spec não encontrado dentro do ZIP." | tee artefatos/erro_buildozer_spec.txt
+            find projeto_apk -maxdepth 8 -type f | tee -a artefatos/erro_buildozer_spec.txt
+            exit 1
+          fi
+
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+          echo "$BUILD_DIR" > artefatos/build_dir.txt
+          echo "buildozer.spec encontrado em: $BUILD_DIR"
+
+      - name: Corrigir buildozer.spec automaticamente
+        run: |
+          cd "$BUILD_DIR"
+
+          if ! grep -q "^title =" buildozer.spec; then
+            sed -i '/^\[app\]/a title = Sistema Express' buildozer.spec
+          fi
+
+          if ! grep -q "^name =" buildozer.spec; then
+            sed -i '/^\[app\]/a name = SistemaExpress' buildozer.spec
+          fi
+
+          if ! grep -q "^package.name =" buildozer.spec; then
+            sed -i '/^\[app\]/a package.name = sistemaexpress' buildozer.spec
+          fi
+
+          if ! grep -q "^package.domain =" buildozer.spec; then
+            sed -i '/^\[app\]/a package.domain = org.expresscolorado' buildozer.spec
+          fi
+
+          echo "buildozer.spec conferido:"
+          sed -n '1,120p' buildozer.spec
+
+      - name: Conferir estrutura do projeto
+        run: |
+          mkdir -p artefatos
+
+          cd "$BUILD_DIR"
+
+          echo "Pasta atual:" | tee ../../artefatos/estrutura.txt
+          pwd | tee -a ../../artefatos/estrutura.txt
+
+          echo "Arquivos encontrados:" | tee -a ../../artefatos/estrutura.txt
+          ls -la | tee -a ../../artefatos/estrutura.txt
+
+          echo "Conteúdo do buildozer.spec:" | tee ../../artefatos/buildozer_spec.txt
+          cat buildozer.spec | tee -a ../../artefatos/buildozer_spec.txt
+
+      - name: Instalar Buildozer
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install buildozer cython
+
+      - name: Gerar APK
+        run: |
+          mkdir -p artefatos
+
+          cd "$BUILD_DIR"
+
+          set +e
+          buildozer -v android debug 2>&1 | tee ../../artefatos/buildozer_build.log
+          CODIGO_SAIDA=${PIPESTATUS[0]}
+          echo "$CODIGO_SAIDA" > ../../artefatos/codigo_saida_buildozer.txt
+
+          mkdir -p ../../artefatos/apk
+          mkdir -p ../../artefatos/logs_buildozer
+
+          if ls bin/*.apk 1> /dev/null 2>&1; then
+            cp bin/*.apk ../../artefatos/apk/
+          fi
+
+          if [ -d ".buildozer" ]; then
+            find .buildozer -name "*.log" -exec cp --parents {} ../../artefatos/logs_buildozer/ \;
+          fi
+
+          cp buildozer.spec ../../artefatos/buildozer.spec || true
+
+          exit $CODIGO_SAIDA
+
+      - name: Enviar APK e logs como artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SISTEMA-EXPRESS-APK-E-LOGS
+          path: artefatos/
